@@ -15,7 +15,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $password = $_POST['password'];
     
     try {
-        $stmt = $db->prepare("SELECT id, username, password FROM users WHERE username = ?");
+        $stmt = $db->prepare("SELECT id, username, password FROM admin_users WHERE username = ?");
         $stmt->execute([$username]);
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
         
@@ -72,8 +72,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="max-w-md w-full mx-4">
         <!-- Logo -->
         <div class="text-center mb-8">
-            <a href="<?php echo SITE_URL; ?>" class="text-4xl font-bold text-primary">
-                POFINFRAA
+            <a href="<?php echo SITE_URL; ?>" class="inline-block">
+                <div class="text-4xl font-bold text-primary tracking-wider">
+                    POF<span class="text-gray-800">INFRAA</span>
+                </div>
+                <div class="text-sm text-gray-600 mt-1">Infrastructure Development</div>
             </a>
             <p class="mt-2 text-gray-600">Admin Portal</p>
         </div>
