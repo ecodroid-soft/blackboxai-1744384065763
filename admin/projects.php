@@ -6,7 +6,7 @@ require_once '../includes/functions.php';
 // Require login
 require_login();
 
-// Handle form submissions
+// Handle form submission
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!verify_csrf_token($_POST['csrf_token'])) {
         set_flash_message('error', 'Invalid token. Please try again.');
@@ -14,80 +14,85 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit();
     }
 
-    if (isset($_POST['action'])) {
-        switch ($_POST['action']) {
-            case 'add':
-                try {
-                    // Handle image upload
-                    $image_result = upload_image($_FILES['image'], 'uploads/projects');
-                    if (!$image_result['success']) {
-                        throw new Exception($image_result['message']);
-                    }
-
+    try {
+        if (isset($_POST['action'])) {
+            switch ($_POST['action']) {
+                case 'add':
+                    // Upload image
+                    $image_url = upload_image($_FILES['image'], PROJECT_UPLOAD_PATH);
+                    
+                    // Insert into database
                     $stmt = $db->prepare("INSERT INTO projects (title, description, image_url, category, completion_date) VALUES (?, ?, ?, ?, ?)");
                     $stmt->execute([
                         sanitize_input($_POST['title']),
                         sanitize_input($_POST['description']),
-                        $image_result['filename'],
+                        $image_url,
                         sanitize_input($_POST['category']),
                         sanitize_input($_POST['completion_date'])
                     ]);
-                    
                     set_flash_message('success', 'Project added successfully.');
-                } catch (Exception $e) {
-                    set_flash_message('error', 'Failed to add project: ' . $e->getMessage());
-                }
-                break;
+                    break;
 
-            case 'edit':
-                try {
-                    $image_sql = '';
-                    $params = [
-                        sanitize_input($_POST['title']),
-                        sanitize_input($_POST['description']),
-                        sanitize_input($_POST['category']),
-                        sanitize_input($_POST['completion_date'])
+                case 'delete':
+                    // Get image filename before deleting record
+                    $stmt = $db->prepare("SELECT image_url FROM projects WHERE id = ?");
+                    $stmt->execute([$_POST['id']]);
+                    $project = $stmt->fetch(PDO::FETCH_ASSOC);
+                    
+                    if ($project) {
+                        // Delete from database
+                        $stmt = $db->prepare("DELETE FROM projects WHERE id = ?");
+                        $stmt->execute([$_POST['id']]);
+                        
+                        // Delete image file
+                        delete_image($project['image_url'], PROJECT_UPLOAD_PATH);
+                        set_flash_message('success', 'Project deleted successfully.');
+                    }
+                    break;
+
+                case 'edit':
+                    $update_fields = [
+                        'title' => sanitize_input($_POST['title']),
+                        'description' => sanitize_input($_POST['description']),
+                        'category' => sanitize_input($_POST['category']),
+                        'completion_date' => sanitize_input($_POST['completion_date'])
                     ];
 
-                    // Handle image upload if new image is provided
+                    // Handle image update if new image uploaded
                     if (!empty($_FILES['image']['name'])) {
-                        $image_result = upload_image($_FILES['image'], 'uploads/projects');
-                        if (!$image_result['success']) {
-                            throw new Exception($image_result['message']);
+                        // Get old image to delete
+                        $stmt = $db->prepare("SELECT image_url FROM projects WHERE id = ?");
+                        $stmt->execute([$_POST['id']]);
+                        $project = $stmt->fetch(PDO::FETCH_ASSOC);
+                        
+                        // Upload new image
+                        $image_url = upload_image($_FILES['image'], PROJECT_UPLOAD_PATH);
+                        $update_fields['image_url'] = $image_url;
+                        
+                        // Delete old image
+                        if ($project) {
+                            delete_image($project['image_url'], PROJECT_UPLOAD_PATH);
                         }
-                        $image_sql = ', image_url = ?';
-                        $params[] = $image_result['filename'];
                     }
 
-                    $params[] = $_POST['id']; // Add ID for WHERE clause
-
-                    $stmt = $db->prepare("UPDATE projects SET title = ?, description = ?, category = ?, completion_date = ?" . $image_sql . " WHERE id = ?");
-                    $stmt->execute($params);
+                    // Build update query
+                    $sql = "UPDATE projects SET " . implode(" = ?, ", array_keys($update_fields)) . " = ? WHERE id = ?";
+                    $stmt = $db->prepare($sql);
+                    $stmt->execute([...array_values($update_fields), $_POST['id']]);
                     
                     set_flash_message('success', 'Project updated successfully.');
-                } catch (Exception $e) {
-                    set_flash_message('error', 'Failed to update project: ' . $e->getMessage());
-                }
-                break;
-
-            case 'delete':
-                try {
-                    $stmt = $db->prepare("DELETE FROM projects WHERE id = ?");
-                    $stmt->execute([$_POST['id']]);
-                    
-                    set_flash_message('success', 'Project deleted successfully.');
-                } catch (Exception $e) {
-                    set_flash_message('error', 'Failed to delete project: ' . $e->getMessage());
-                }
-                break;
+                    break;
+            }
         }
-        
-        header('Location: projects.php');
-        exit();
+    } catch (Exception $e) {
+        set_flash_message('error', 'Error: ' . $e->getMessage());
     }
+    
+    header('Location: projects.php');
+    exit();
 }
 
-// Get projects for listing
+// Get all projects
 try {
     $stmt = $db->query("SELECT * FROM projects ORDER BY created_at DESC");
     $projects = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -96,17 +101,8 @@ try {
     set_flash_message('error', 'Failed to fetch projects.');
 }
 
-// Get project for editing if ID is provided
-$edit_project = null;
-if (isset($_GET['action']) && $_GET['action'] === 'edit' && isset($_GET['id'])) {
-    try {
-        $stmt = $db->prepare("SELECT * FROM projects WHERE id = ?");
-        $stmt->execute([$_GET['id']]);
-        $edit_project = $stmt->fetch(PDO::FETCH_ASSOC);
-    } catch (PDOException $e) {
-        set_flash_message('error', 'Failed to fetch project for editing.');
-    }
-}
+// Project categories
+$categories = ['Commercial', 'Residential', 'Infrastructure', 'Industrial'];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -148,7 +144,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'edit' && isset($_GET['id'])) 
     </style>
 </head>
 <body class="bg-gray-100">
-    <div x-data="{ sidebarOpen: false }">
+    <div x-data="{ sidebarOpen: false, editModal: false, selectedProject: null }">
         <!-- Sidebar -->
         <div class="fixed inset-y-0 left-0 z-30 w-64 bg-white shadow-lg transform transition-transform duration-300 lg:transform-none lg:relative"
              :class="{'translate-x-0': sidebarOpen, '-translate-x-full': !sidebarOpen}">
@@ -215,143 +211,178 @@ if (isset($_GET['action']) && $_GET['action'] === 'edit' && isset($_GET['id'])) 
                 </div>
                 <?php endif; ?>
 
-                <div class="flex justify-between items-center mb-6">
+                <div class="mb-6">
                     <h1 class="text-2xl font-bold">Manage Projects</h1>
-                    <?php if (!isset($_GET['action']) || $_GET['action'] !== 'add'): ?>
-                    <a href="?action=add" class="bg-primary hover:bg-red-700 text-white px-4 py-2 rounded-lg transition-colors">
-                        <i class="fas fa-plus mr-2"></i>Add New Project
-                    </a>
-                    <?php endif; ?>
+                    <p class="text-gray-600 mt-1">Add, edit, or remove projects from your portfolio.</p>
                 </div>
 
-                <?php if (isset($_GET['action']) && ($_GET['action'] === 'add' || $_GET['action'] === 'edit')): ?>
-                <!-- Add/Edit Form -->
-                <div class="bg-white rounded-lg shadow-sm p-6">
-                    <h2 class="text-xl font-bold mb-6">
-                        <?php echo $_GET['action'] === 'add' ? 'Add New Project' : 'Edit Project'; ?>
-                    </h2>
-                    
-                    <form action="" method="POST" enctype="multipart/form-data" class="space-y-6">
+                <!-- Add New Project Form -->
+                <div class="bg-white rounded-lg shadow-sm p-6 mb-6">
+                    <h2 class="text-xl font-bold mb-4">Add New Project</h2>
+                    <form action="" method="POST" enctype="multipart/form-data" class="space-y-4">
                         <input type="hidden" name="csrf_token" value="<?php echo generate_csrf_token(); ?>">
-                        <input type="hidden" name="action" value="<?php echo $_GET['action']; ?>">
-                        <?php if ($edit_project): ?>
-                        <input type="hidden" name="id" value="<?php echo $edit_project['id']; ?>">
-                        <?php endif; ?>
+                        <input type="hidden" name="action" value="add">
 
-                        <div>
-                            <label for="title" class="block text-gray-700 font-medium mb-2">Project Title</label>
-                            <input type="text" id="title" name="title" required
-                                   value="<?php echo $edit_project ? htmlspecialchars($edit_project['title']) : ''; ?>"
-                                   class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div>
+                                <label for="title" class="block text-gray-700 font-medium mb-2">Project Title</label>
+                                <input type="text" id="title" name="title" required
+                                       class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                            </div>
+
+                            <div>
+                                <label for="category" class="block text-gray-700 font-medium mb-2">Category</label>
+                                <select id="category" name="category" required
+                                        class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                                    <?php foreach ($categories as $category): ?>
+                                    <option value="<?php echo $category; ?>"><?php echo $category; ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label for="completion_date" class="block text-gray-700 font-medium mb-2">Completion Date</label>
+                                <input type="date" id="completion_date" name="completion_date" required
+                                       class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                            </div>
+
+                            <div>
+                                <label for="image" class="block text-gray-700 font-medium mb-2">Project Image</label>
+                                <input type="file" id="image" name="image" required accept="image/*"
+                                       class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                                <p class="mt-1 text-sm text-gray-500">Maximum file size: 5MB. Allowed formats: JPG, JPEG, PNG, GIF</p>
+                            </div>
                         </div>
 
                         <div>
                             <label for="description" class="block text-gray-700 font-medium mb-2">Description</label>
                             <textarea id="description" name="description" rows="4" required
-                                      class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"><?php echo $edit_project ? htmlspecialchars($edit_project['description']) : ''; ?></textarea>
+                                      class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"></textarea>
                         </div>
 
                         <div>
-                            <label for="category" class="block text-gray-700 font-medium mb-2">Category</label>
-                            <input type="text" id="category" name="category" required
-                                   value="<?php echo $edit_project ? htmlspecialchars($edit_project['category']) : ''; ?>"
-                                   class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
-                        </div>
-
-                        <div>
-                            <label for="completion_date" class="block text-gray-700 font-medium mb-2">Completion Date</label>
-                            <input type="date" id="completion_date" name="completion_date" required
-                                   value="<?php echo $edit_project ? $edit_project['completion_date'] : ''; ?>"
-                                   class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
-                        </div>
-
-                        <div>
-                            <label for="image" class="block text-gray-700 font-medium mb-2">
-                                Project Image <?php echo $edit_project ? '(Leave empty to keep current image)' : ''; ?>
-                            </label>
-                            <input type="file" id="image" name="image" accept="image/*" <?php echo !$edit_project ? 'required' : ''; ?>
-                                   class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
-                        </div>
-
-                        <div class="flex justify-end space-x-4">
-                            <a href="projects.php" class="px-6 py-2 border border-gray-300 rounded-md hover:bg-gray-50 transition-colors">
-                                Cancel
-                            </a>
                             <button type="submit" class="px-6 py-2 bg-primary hover:bg-red-700 text-white rounded-md transition-colors">
-                                <?php echo $_GET['action'] === 'add' ? 'Add Project' : 'Update Project'; ?>
+                                Add Project
                             </button>
                         </div>
                     </form>
                 </div>
-                <?php else: ?>
+
                 <!-- Projects List -->
-                <div class="bg-white rounded-lg shadow-sm overflow-hidden">
-                    <table class="w-full">
-                        <thead class="bg-gray-50">
-                            <tr>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Project</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Completion Date</th>
-                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody class="divide-y divide-gray-200">
-                            <?php if (empty($projects)): ?>
-                            <tr>
-                                <td colspan="4" class="px-6 py-4 text-center text-gray-500">
-                                    No projects found. <a href="?action=add" class="text-primary hover:text-red-700">Add one now</a>.
-                                </td>
-                            </tr>
-                            <?php else: ?>
-                            <?php foreach ($projects as $project): ?>
-                            <tr>
-                                <td class="px-6 py-4">
-                                    <div class="flex items-center">
-                                        <div class="h-10 w-10 flex-shrink-0">
-                                            <img class="h-10 w-10 rounded object-cover" 
-                                                 src="../uploads/projects/<?php echo htmlspecialchars($project['image_url']); ?>" 
-                                                 alt="<?php echo htmlspecialchars($project['title']); ?>">
-                                        </div>
-                                        <div class="ml-4">
-                                            <div class="text-sm font-medium text-gray-900">
-                                                <?php echo htmlspecialchars($project['title']); ?>
-                                            </div>
-                                            <div class="text-sm text-gray-500">
-                                                <?php echo truncate_text($project['description'], 50); ?>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </td>
-                                <td class="px-6 py-4 text-sm text-gray-500">
-                                    <?php echo htmlspecialchars($project['category']); ?>
-                                </td>
-                                <td class="px-6 py-4 text-sm text-gray-500">
-                                    <?php echo format_date($project['completion_date']); ?>
-                                </td>
-                                <td class="px-6 py-4 text-sm font-medium">
-                                    <div class="flex space-x-3">
-                                        <a href="?action=edit&id=<?php echo $project['id']; ?>" 
-                                           class="text-indigo-600 hover:text-indigo-900">
-                                            <i class="fas fa-edit"></i>
-                                        </a>
-                                        <form action="" method="POST" class="inline-block" 
-                                              onsubmit="return confirm('Are you sure you want to delete this project?');">
-                                            <input type="hidden" name="csrf_token" value="<?php echo generate_csrf_token(); ?>">
-                                            <input type="hidden" name="action" value="delete">
-                                            <input type="hidden" name="id" value="<?php echo $project['id']; ?>">
-                                            <button type="submit" class="text-red-600 hover:text-red-900">
-                                                <i class="fas fa-trash-alt"></i>
-                                            </button>
-                                        </form>
-                                    </div>
-                                </td>
-                            </tr>
-                            <?php endforeach; ?>
-                            <?php endif; ?>
-                        </tbody>
-                    </table>
+                <div class="bg-white rounded-lg shadow-sm p-6">
+                    <h2 class="text-xl font-bold mb-4">Current Projects</h2>
+                    
+                    <?php if (empty($projects)): ?>
+                    <p class="text-gray-600">No projects found.</p>
+                    <?php else: ?>
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        <?php foreach ($projects as $project): ?>
+                        <div class="border rounded-lg overflow-hidden">
+                            <img src="<?php echo SITE_URL . '/' . PROJECT_UPLOAD_PATH . $project['image_url']; ?>" 
+                                 alt="<?php echo htmlspecialchars($project['title']); ?>"
+                                 class="w-full h-48 object-cover">
+                            
+                            <div class="p-4">
+                                <h3 class="font-medium"><?php echo htmlspecialchars($project['title']); ?></h3>
+                                <p class="text-sm text-gray-600 mt-1"><?php echo htmlspecialchars($project['category']); ?></p>
+                                <p class="text-sm text-gray-500 mt-1">
+                                    Completed: <?php echo date('M Y', strtotime($project['completion_date'])); ?>
+                                </p>
+                                
+                                <div class="mt-4 flex items-center justify-end space-x-4">
+                                    <button @click="editModal = true; selectedProject = <?php echo htmlspecialchars(json_encode($project)); ?>"
+                                            class="text-blue-600 hover:text-blue-800">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                    
+                                    <form action="" method="POST" class="inline" onsubmit="return confirm('Are you sure you want to delete this project?');">
+                                        <input type="hidden" name="csrf_token" value="<?php echo generate_csrf_token(); ?>">
+                                        <input type="hidden" name="action" value="delete">
+                                        <input type="hidden" name="id" value="<?php echo $project['id']; ?>">
+                                        <button type="submit" class="text-red-600 hover:text-red-800">
+                                            <i class="fas fa-trash"></i>
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <?php endif; ?>
                 </div>
-                <?php endif; ?>
+
+                <!-- Edit Project Modal -->
+                <div x-show="editModal" 
+                     class="fixed inset-0 z-50 overflow-y-auto"
+                     x-transition:enter="transition ease-out duration-300"
+                     x-transition:enter-start="opacity-0"
+                     x-transition:enter-end="opacity-100"
+                     x-transition:leave="transition ease-in duration-200"
+                     x-transition:leave-start="opacity-100"
+                     x-transition:leave-end="opacity-0">
+                    <div class="flex items-center justify-center min-h-screen px-4">
+                        <div class="fixed inset-0 bg-black opacity-50"></div>
+                        
+                        <div class="relative bg-white rounded-lg max-w-lg w-full p-6">
+                            <h3 class="text-xl font-bold mb-4">Edit Project</h3>
+                            
+                            <form action="" method="POST" enctype="multipart/form-data" class="space-y-4">
+                                <input type="hidden" name="csrf_token" value="<?php echo generate_csrf_token(); ?>">
+                                <input type="hidden" name="action" value="edit">
+                                <input type="hidden" name="id" x-bind:value="selectedProject?.id">
+
+                                <div>
+                                    <label class="block text-gray-700 font-medium mb-2">Project Title</label>
+                                    <input type="text" name="title" required x-bind:value="selectedProject?.title"
+                                           class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                                </div>
+
+                                <div>
+                                    <label class="block text-gray-700 font-medium mb-2">Category</label>
+                                    <select name="category" required
+                                            class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                                        <?php foreach ($categories as $category): ?>
+                                        <option value="<?php echo $category; ?>" 
+                                                x-bind:selected="selectedProject?.category === '<?php echo $category; ?>'">
+                                            <?php echo $category; ?>
+                                        </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+
+                                <div>
+                                    <label class="block text-gray-700 font-medium mb-2">Completion Date</label>
+                                    <input type="date" name="completion_date" required x-bind:value="selectedProject?.completion_date"
+                                           class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                                </div>
+
+                                <div>
+                                    <label class="block text-gray-700 font-medium mb-2">Project Image</label>
+                                    <input type="file" name="image" accept="image/*"
+                                           class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary">
+                                    <p class="mt-1 text-sm text-gray-500">Leave empty to keep current image</p>
+                                </div>
+
+                                <div>
+                                    <label class="block text-gray-700 font-medium mb-2">Description</label>
+                                    <textarea name="description" rows="4" required x-text="selectedProject?.description"
+                                              class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary"></textarea>
+                                </div>
+
+                                <div class="flex justify-end space-x-4">
+                                    <button type="button" @click="editModal = false"
+                                            class="px-4 py-2 text-gray-600 hover:text-gray-800">
+                                        Cancel
+                                    </button>
+                                    <button type="submit"
+                                            class="px-6 py-2 bg-primary hover:bg-red-700 text-white rounded-md transition-colors">
+                                        Save Changes
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                </div>
             </main>
         </div>
     </div>
