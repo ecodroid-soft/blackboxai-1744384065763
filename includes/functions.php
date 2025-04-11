@@ -40,9 +40,26 @@ function require_login() {
 
 // Upload image
 function upload_image($file, $directory = 'uploads') {
-    $target_dir = "../" . $directory . "/";
+    switch ($directory) {
+        case 'sliders':
+            $target_dir = SLIDER_UPLOAD_PATH;
+            break;
+        case 'projects':
+            $target_dir = PROJECT_UPLOAD_PATH;
+            break;
+        default:
+            $target_dir = UPLOAD_PATH;
+    }
+
+    // Create directory if it doesn't exist
     if (!file_exists($target_dir)) {
         mkdir($target_dir, 0777, true);
+    }
+    
+    // Check if image file is a actual image or fake image
+    $check = getimagesize($file["tmp_name"]);
+    if($check === false) {
+        return array('success' => false, 'message' => 'File is not an image.');
     }
     
     $file_extension = strtolower(pathinfo($file["name"], PATHINFO_EXTENSION));
@@ -63,7 +80,7 @@ function upload_image($file, $directory = 'uploads') {
     if (move_uploaded_file($file["tmp_name"], $target_file)) {
         return array('success' => true, 'filename' => $new_filename);
     } else {
-        return array('success' => false, 'message' => 'Error uploading file.');
+        return array('success' => false, 'message' => 'Error uploading file. Please check directory permissions.');
     }
 }
 
